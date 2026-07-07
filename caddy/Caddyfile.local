@@ -1,0 +1,16 @@
+# Local development Caddyfile.
+# Terminates TLS with a locally-trusted (self-signed) certificate on
+# https://localhost and proxies to the Keycloak container. The admin console
+# stays reachable locally so you can iterate on realm configuration.
+#
+# NOTE: a local issuer cannot be used for Entra federation (Entra must be able
+# to fetch the OIDC discovery document over the public internet). This stack
+# exists to develop and validate realm/client configuration before deploying.
+{
+	admin off
+}
+
+localhost {
+	tls internal
+	reverse_proxy keycloak:8081
+}

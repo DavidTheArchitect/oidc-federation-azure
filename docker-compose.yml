@@ -1,0 +1,58 @@
+# Local development stack mirroring the Azure Container Apps deployment:
+#   caddy (TLS) -> keycloak -> postgres
+#
+# Usage:
+#   docker compose up -d
+#   curl -k https://localhost/realms/master/.well-known/openid-configuration
+#   Admin console: https://localhost/admin (admin / value of KC_ADMIN_PASSWORD)
+#
+# This local issuer is for developing realm/client configuration only — Entra
+# ID cannot federate with it because it is not publicly reachable.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localdev-postgres}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3
+    command: ["start"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-localdev-postgres}
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:-localdev-admin}
+      KC_HOSTNAME: https://localhost
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_PORT: "8081"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile.local:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - keycloak
+
+volumes:
+  pgdata:
+  caddy_data:

@@ -1,0 +1,27 @@
+# Azure Container Apps sidecar Caddyfile.
+# TLS is terminated by the Container Apps ingress; Caddy listens on plain HTTP
+# :8080 (the ingress target port) and proxies to Keycloak on 127.0.0.1:8081
+# inside the same replica.
+#
+# Roles of this proxy:
+#   1. Lockdown: when CADDY_ADMIN_LOCKDOWN=true, the Keycloak admin REST API
+#      (/admin/*), the master realm (login + token endpoints used only for
+#      administration), and /metrics return 403 to the public internet.
+#      deploy.ps1 deploys with lockdown OFF, bootstraps the realm, then flips
+#      the env var to true (one `az containerapp update`, new revision).
+#   2. JWKS caching: Entra ID re-fetches the issuer's signing keys; a short
+#      Cache-Control makes that cheap without delaying key rotation much.
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	@lockdown expression `{env.CADDY_ADMIN_LOCKDOWN} == "true" && (path('/admin*') || path('/realms/master*') || path('/metrics*'))`
+	respond @lockdown 403
+
+	@jwks path /realms/*/protocol/openid-connect/certs
+	header @jwks Cache-Control "public, max-age=300"
+
+	reverse_proxy 127.0.0.1:8081
+}

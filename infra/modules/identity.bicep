@@ -3,9 +3,9 @@
 // end-to-end test:
 //   - Reader on this resource group        -> control-plane proof (ARM GET)
 //   - Storage Blob Data Reader on storage  -> data-plane proof (blob read)
-// The federated identity credential itself is created after Keycloak is
-// bootstrapped (scripts/create-federation.ps1), because the FIC subject must
-// exactly match the service-account user UUID Keycloak generates.
+// The federated identity credential itself lives in modules/federation.bicep
+// and is created after the bootstrap deploymentScript has run, because the
+// FIC subject must exactly match the service-account UUID Keycloak generates.
 param location string
 param baseName string
 param storageAccountName string

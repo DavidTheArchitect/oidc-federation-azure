@@ -54,40 +54,75 @@ the internet and to add cache headers on the JWKS endpoint.
 - PowerShell 7+ (`pwsh`).
 - Docker Desktop only if you want the local development stack.
 
-## Quick start (deploy everything)
+## Deploying
+
+**The Bicep template is self-sufficient.** Deploying `infra/main.bicep` — from
+the Bicep extension GUI, plain `az deployment sub create`, or the wrapper
+script — performs the entire flow (~15–20 minutes on first run):
+
+1. **Infrastructure** — resource group, Log Analytics, Container Apps
+   environment, PostgreSQL Flexible Server, the Keycloak + Caddy container
+   app, the user-assigned managed identity with `Reader` on the resource
+   group and `Storage Blob Data Reader` on a demo storage account.
+2. **In-Azure bootstrap** (`infra/scripts/bootstrap.sh`, run by an embedded
+   `deploymentScripts` resource under a dedicated deployer identity) — waits
+   for Keycloak, creates realm `azure`, confidential client
+   `azure-federation` (service account only, secret from your parameter), the
+   hardcoded audience mapper `aud: api://AzureADTokenExchange`, uploads the
+   demo blob, and re-enables the Caddy admin lockdown (`/admin*`,
+   `/realms/master*`, `/metrics` → 403 from the internet).
+3. **Federation** — the template creates the federated identity credential on
+   the managed identity from the bootstrap output: issuer
+   `https://<fqdn>/realms/azure`, subject `<service-account UUID>`, audience
+   `api://AzureADTokenExchange`.
+
+You supply three secure parameters of your choosing (16+ chars): the Keycloak
+admin password, the PostgreSQL admin password, and the Keycloak client secret.
+The client secret is a parameter (not Keycloak-generated) precisely so it
+never has to appear in deployment outputs.
+
+### Option A: Bicep extension GUI (VS Code / Codespaces)
+
+1. One-time, make sure the resource providers are registered (the wrapper
+   script does this automatically; the GUI does not):
+
+   ```powershell
+   'Microsoft.App','Microsoft.OperationalInsights','Microsoft.DBforPostgreSQL',
+   'Microsoft.ManagedIdentity','Microsoft.Storage','Microsoft.ContainerInstance' |
+     ForEach-Object { az provider register --namespace $_ }
+   ```
+
+2. Open `infra/main.bicep`, click **Deploy** in the Bicep extension (or use
+   the deployment pane), pick the subscription (the template is
+   subscription-scoped — it creates its own resource group), and select
+   `infra/main.bicepparam` as the parameters file.
+3. The GUI prompts for the three secrets, everything else has defaults. Then
+   deploy — when it finishes, the federation is live.
+4. To verify, feed the deployment outputs to the test script (the client
+   secret is the value you typed in step 3):
+
+   ```powershell
+   ./scripts/test-federation.ps1 -KeycloakUrl https://<keycloakFqdn> -Realm azure `
+     -ClientId azure-federation -ClientSecret <yours> -TenantId <tenantId> `
+     -UamiClientId <identityClientId> -SubscriptionId <sub> `
+     -ResourceGroup <resourceGroupName> -StorageAccount <storageAccountName>
+   ```
+
+### Option B: wrapper script
 
 ```powershell
 cd oidc-federation-azure
 ./scripts/deploy.ps1 -Location eastus2 -BaseName oidcfed
 ```
 
-One command runs the whole flow (~10–15 minutes on first run):
+Same deployment, plus conveniences: provider registration, crypto-random
+secrets (reused from `.env` on re-runs), writes all resolved values to
+`oidc-federation-azure/.env`, and runs the end-to-end test at the end.
 
-1. **Preflight** — subscription check, resource-provider registration,
-   crypto-random passwords (reused from `.env` on re-runs).
-2. **Bicep** (`infra/main.bicep`) — resource group, Log Analytics, Container
-   Apps environment, PostgreSQL Flexible Server, the Keycloak + Caddy
-   container app, the user-assigned managed identity with `Reader` on the
-   resource group and `Storage Blob Data Reader` on a demo storage account.
-3. **Readiness** — polls the OIDC discovery endpoint until Keycloak is up.
-4. **Bootstrap** (`scripts/bootstrap-keycloak.ps1`) — creates realm `azure`,
-   confidential client `azure-federation` (service account only), and the
-   hardcoded audience mapper `aud: api://AzureADTokenExchange`; reads the
-   service-account UUID that becomes the FIC subject.
-5. **Federation** (`scripts/create-federation.ps1`) — creates the FIC on the
-   managed identity: issuer `https://<fqdn>/realms/azure`, subject
-   `<service-account UUID>`, audience `api://AzureADTokenExchange`.
-6. **Lockdown** — uploads the demo blob, then flips the Caddy sidecar to
-   block `/admin*`, `/realms/master*`, and `/metrics` from the internet.
-7. **Verify** (`scripts/test-federation.ps1`) — mints a Keycloak token,
-   exchanges it at Entra, reads the resource group via ARM (control plane)
-   and the demo blob (data plane), printing PASS/FAIL per step.
-8. Writes all resolved values to `oidc-federation-azure/.env` (gitignored).
-
-Re-run any step standalone later, e.g.:
+Either way, afterwards:
 
 ```powershell
-./scripts/test-federation.ps1          # re-verify the trust end to end
+./scripts/test-federation.ps1          # re-verify the trust end to end (uses .env)
 python samples/client_azure_via_keycloak.py   # same proof from Python/azure-identity
 ./scripts/destroy.ps1                  # delete the whole resource group
 ```
@@ -123,6 +158,10 @@ az containerapp update -n keycloak-<baseName> -g rg-<baseName> `
 az containerapp update -n keycloak-<baseName> -g rg-<baseName> `
   --container-name caddy --set-env-vars CADDY_ADMIN_LOCKDOWN=true
 ```
+
+Note: every template re-deploy briefly resets the lockdown to `false` (so the
+in-deployment bootstrap can reach the admin API) and the bootstrap script
+re-enables it as its final step.
 
 ## Local development stack (docker compose)
 
@@ -163,13 +202,12 @@ development only.
 
 | Path | Purpose |
 | --- | --- |
-| `infra/main.bicep` (+ `infra/modules/*.bicep`) | Subscription-scope deployment of all Azure resources. |
+| `infra/main.bicep` (+ `infra/modules/*.bicep`) | Subscription-scope deployment of everything, including the in-Azure bootstrap and the FIC. |
+| `infra/scripts/bootstrap.sh` | Runs inside the `deploymentScripts` container: Keycloak realm/client/mapper setup (idempotent), demo blob, lockdown. |
 | `caddy/Caddyfile.aca` | Sidecar proxy: admin lockdown + JWKS cache headers. |
 | `caddy/Caddyfile.local` | Local TLS proxy for the compose stack. |
 | `docker-compose.yml` | Local Caddy + Keycloak + Postgres stack. |
-| `scripts/deploy.ps1` | One-shot orchestrator (steps above). |
-| `scripts/bootstrap-keycloak.ps1` | Realm/client/audience-mapper setup (idempotent). |
-| `scripts/create-federation.ps1` | Creates/updates the FIC on the managed identity. |
+| `scripts/deploy.ps1` | Optional wrapper: provider registration, secret generation, `.env`, test run. |
 | `scripts/test-federation.ps1` | End-to-end PASS/FAIL verification. |
 | `scripts/destroy.ps1` | Deletes the resource group (and local `.env`). |
 | `samples/client_azure_via_keycloak.py` | Python client using `ClientAssertionCredential`. |

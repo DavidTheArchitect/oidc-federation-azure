@@ -14,9 +14,9 @@ param postgresLogin string
 param postgresPassword string
 @secure()
 param keycloakAdminPassword string
-// Deployed as 'false' so bootstrap-keycloak.ps1 can reach the admin REST API;
-// deploy.ps1 flips it to 'true' afterwards (new revision) to hide /admin, the
-// master realm, and /metrics from the public internet.
+// Deployed as 'false' so the in-deployment bootstrap script can reach the
+// admin REST API; the same script flips it to 'true' as its final step (new
+// revision) to hide /admin, the master realm, and /metrics from the internet.
 param adminLockdown bool = false
 
 var fqdn = '${appName}.${environmentDefaultDomain}'

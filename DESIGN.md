@@ -50,15 +50,21 @@ possible: one Bicep template plus PowerShell orchestration.
 
 ## Deliverables
 
-- `infra/main.bicep` + `infra/modules/{network-logs,postgres,keycloak-app,identity,storage-demo}.bicep`
-  — subscription-scope deployment of everything except the FIC.
+- `infra/main.bicep` + `infra/modules/{network-logs,postgres,keycloak-app,identity,bootstrap,federation,storage-demo}.bicep`
+  — self-sufficient subscription-scope deployment. An embedded
+  `deploymentScripts` resource (`infra/scripts/bootstrap.sh`, run in Azure
+  under a dedicated deployer identity with Contributor on the resource group)
+  waits for Keycloak, bootstraps realm/client/audience mapper, uploads the
+  demo blob, and re-enables the admin lockdown; the FIC is then created from
+  its `subject` output. This means deploying `main.bicep` alone — including
+  from the Bicep extension GUI — produces a fully working federation. The
+  Keycloak client secret is a secure *input* parameter so it never appears in
+  deployment outputs.
 - `caddy/Caddyfile.aca` (sidecar lockdown/caching) and `caddy/Caddyfile.local`.
 - `docker-compose.yml` — local parity stack.
-- `scripts/deploy.ps1` — one-shot orchestrator: preflight → Bicep → wait for
-  discovery endpoint → `bootstrap-keycloak.ps1` (realm, client, audience mapper,
-  read service-account UUID) → `create-federation.ps1` (FIC via
-  `az identity federated-credential create`) → demo blob upload → admin lockdown
-  → `test-federation.ps1` → write `.env`. Idempotent/re-runnable.
+- `scripts/deploy.ps1` — optional convenience wrapper: preflight/provider
+  registration → secret generation (reused from `.env` on re-runs) → the Bicep
+  deployment → write `.env` → `test-federation.ps1`. Idempotent/re-runnable.
 - `scripts/test-federation.ps1` — PASS/FAIL proof: Keycloak token → Entra
   exchange → ARM GET (control plane) → blob read (data plane), with retries for
   FIC/RBAC propagation.

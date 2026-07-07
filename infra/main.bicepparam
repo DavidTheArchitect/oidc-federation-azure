@@ -3,7 +3,9 @@ using 'main.bicep'
 param location = 'eastus2'
 param baseName = 'oidcfed'
 
-// Secrets are supplied on the command line by scripts/deploy.ps1; the
-// environment-variable fallback lets you deploy the template directly.
-param keycloakAdminPassword = readEnvironmentVariable('KC_ADMIN_PASSWORD', '')
-param postgresAdminPassword = readEnvironmentVariable('POSTGRES_PASSWORD', '')
+// The three secrets (keycloakAdminPassword, postgresAdminPassword,
+// keycloakClientSecret) are intentionally NOT set here: the Bicep deployment
+// GUI and the CLI prompt for missing secure parameters, and
+// scripts/deploy.ps1 passes generated values on the command line. Pick
+// 16+ character values; the PostgreSQL password additionally needs characters
+// from at least three categories (upper/lower/digits qualify).

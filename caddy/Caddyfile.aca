@@ -7,8 +7,9 @@
 #   1. Lockdown: when CADDY_ADMIN_LOCKDOWN=true, the Keycloak admin REST API
 #      (/admin/*), the master realm (login + token endpoints used only for
 #      administration), and /metrics return 403 to the public internet.
-#      deploy.ps1 deploys with lockdown OFF, bootstraps the realm, then flips
-#      the env var to true (one `az containerapp update`, new revision).
+#      The template deploys with lockdown OFF so the in-deployment bootstrap
+#      script can reach the admin API; that script flips the env var to true
+#      as its final step (one `az containerapp update`, new revision).
 #   2. JWKS caching: Entra ID re-fetches the issuer's signing keys; a short
 #      Cache-Control makes that cheap without delaying key rotation much.
 {

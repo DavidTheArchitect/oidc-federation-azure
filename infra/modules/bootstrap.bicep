@@ -13,6 +13,9 @@ param clientId string
 param keycloakAdminPassword string
 @secure()
 param keycloakClientSecret string
+param testUsername string
+@secure()
+param testUserPassword string
 param storageAccountName string
 param containerAppName string
 // Changes on every deployment so the (idempotent) script always re-runs -
@@ -84,6 +87,14 @@ resource bootstrap 'Microsoft.Resources/deploymentScripts@2023-08-01' = {
         secureValue: keycloakClientSecret
       }
       {
+        name: 'TEST_USERNAME'
+        value: testUsername
+      }
+      {
+        name: 'TEST_USER_PASSWORD'
+        secureValue: testUserPassword
+      }
+      {
         name: 'STORAGE_ACCOUNT'
         value: storageAccountName
       }
@@ -103,5 +114,7 @@ resource bootstrap 'Microsoft.Resources/deploymentScripts@2023-08-01' = {
   }
 }
 
-// The `sub` claim of the Keycloak client's tokens - the FIC subject.
+// The `sub` claims that become the two FIC subjects: the service-account
+// UUID (client_credentials) and the test user's UUID (password grant).
 output subject string = bootstrap.properties.outputs.subject
+output userSubject string = bootstrap.properties.outputs.userSubject

@@ -20,6 +20,8 @@ param(
     [string]$SubscriptionId,
     [string]$ResourceGroup,
     [string]$StorageAccount,
+    [string]$TestUsername,
+    [string]$TestUserPassword,
     [string]$BlobContainer = 'demo',
     [string]$BlobName = 'hello.txt',
     [int]$MaxAttempts = 12,
@@ -45,6 +47,8 @@ if (Test-Path $EnvFile) {
     if (-not $SubscriptionId) { $SubscriptionId = $envMap['AZURE_SUBSCRIPTION_ID'] }
     if (-not $ResourceGroup)  { $ResourceGroup  = $envMap['AZURE_RESOURCE_GROUP'] }
     if (-not $StorageAccount) { $StorageAccount = $envMap['DEMO_STORAGE_ACCOUNT'] }
+    if (-not $TestUsername)     { $TestUsername     = $envMap['KEYCLOAK_TEST_USERNAME'] }
+    if (-not $TestUserPassword) { $TestUserPassword = $envMap['KEYCLOAK_TEST_USER_PASSWORD'] }
 }
 foreach ($required in 'KeycloakUrl', 'Realm', 'ClientId', 'ClientSecret', 'TenantId',
                       'UamiClientId', 'SubscriptionId', 'ResourceGroup', 'StorageAccount') {
@@ -103,7 +107,7 @@ try {
 
 # --- Step 2/3: exchange for Entra tokens (ARM + Storage scopes) -------------
 function Get-EntraToken {
-    param([string]$Scope)
+    param([string]$Scope, [string]$Assertion = $kcToken)
     (Invoke-RestMethod -Method Post `
         -Uri "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token" `
         -ContentType 'application/x-www-form-urlencoded' `
@@ -111,7 +115,7 @@ function Get-EntraToken {
             grant_type            = 'client_credentials'
             client_id             = $UamiClientId
             client_assertion_type = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer'
-            client_assertion      = $kcToken
+            client_assertion      = $Assertion
             scope                 = $Scope
         }).access_token
 }
@@ -158,6 +162,49 @@ try {
     Report 'Data plane: blob content read' $true "($blob)"
 } catch {
     Report 'Data plane: blob content read' $false $_.Exception.Message
+}
+
+# --- Step 6/7: test-user flow (password grant -> Entra -> control plane) -----
+# Proves the second federated credential (subject = test user's UUID). Skipped
+# only if no test-user credentials are configured.
+if ($TestUsername -and $TestUserPassword) {
+    $userToken = $null
+    try {
+        $userResponse = Invoke-RestMethod -Method Post `
+            -Uri "$KeycloakUrl/realms/$Realm/protocol/openid-connect/token" `
+            -ContentType 'application/x-www-form-urlencoded' `
+            -Body @{
+                grant_type    = 'password'
+                client_id     = $ClientId
+                client_secret = $ClientSecret
+                username      = $TestUsername
+                password      = $TestUserPassword
+                scope         = 'openid'
+            }
+        $userToken = $userResponse.access_token
+        $userClaims = ConvertFrom-JwtPayload $userToken
+        Report 'Keycloak test-user token minted' $true "(sub=$($userClaims.sub) preferred_username=$($userClaims.preferred_username))"
+    } catch {
+        Report 'Keycloak test-user token minted' $false $_.Exception.Message
+    }
+
+    if ($userToken) {
+        try {
+            $userArmToken = Invoke-WithRetry 'Entra token exchange (test user)' {
+                Get-EntraToken 'https://management.azure.com/.default' $userToken
+            }
+            $rg = Invoke-WithRetry 'ARM GET (test user)' {
+                Invoke-RestMethod -Method Get `
+                    -Uri "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$($ResourceGroup)?api-version=2021-04-01" `
+                    -Headers @{ Authorization = "Bearer $userArmToken" }
+            }
+            Report 'Test user: exchange + control plane ARM GET' $true "($($rg.id))"
+        } catch {
+            Report 'Test user: exchange + control plane ARM GET' $false $_.Exception.Message
+        }
+    }
+} else {
+    Write-Host '[SKIP] test-user flow (no KEYCLOAK_TEST_USERNAME/PASSWORD configured)'
 }
 
 if ($failed) {

@@ -45,7 +45,11 @@ else
     curl -fsS -X POST -H "$AUTH" -H 'Content-Type: application/json' "$BASE" -d @-
 fi
 
-# --- Confidential client, service-account (client_credentials) flow only -----
+# --- Confidential client -----------------------------------------------------
+# Two flows are enabled on one client so both federation subjects work:
+#   - serviceAccounts (client_credentials): sub = the service-account UUID.
+#   - directAccessGrants (password/ROPC):   sub = the test user's UUID, so a
+#     token minted for the test user also carries the audience mapper below.
 # The client secret is supplied as a deployment parameter (instead of letting
 # Keycloak generate one) so it never has to appear in deployment outputs.
 CLIENT_UUID=$(curl -fsS -H "$AUTH" "$BASE/$REALM/clients?clientId=$CLIENT_ID" | jq -r '.[0].id // empty')
@@ -54,14 +58,15 @@ if [ -z "$CLIENT_UUID" ]; then
   jq -n --arg cid "$CLIENT_ID" --arg secret "$KC_CLIENT_SECRET" '{
       clientId: $cid, protocol: "openid-connect", publicClient: false,
       serviceAccountsEnabled: true, standardFlowEnabled: false,
-      implicitFlowEnabled: false, directAccessGrantsEnabled: false,
+      implicitFlowEnabled: false, directAccessGrantsEnabled: true,
       secret: $secret
     }' | curl -fsS -X POST -H "$AUTH" -H 'Content-Type: application/json' "$BASE/$REALM/clients" -d @-
   CLIENT_UUID=$(curl -fsS -H "$AUTH" "$BASE/$REALM/clients?clientId=$CLIENT_ID" | jq -r '.[0].id')
 else
-  echo "Client '$CLIENT_ID' already exists; ensuring the secret matches the parameter."
-  jq -n --arg secret "$KC_CLIENT_SECRET" '{secret: $secret}' |
-    curl -fsS -X PUT -H "$AUTH" -H 'Content-Type: application/json' "$BASE/$REALM/clients/$CLIENT_UUID" -d @-
+  echo "Client '$CLIENT_ID' already exists; ensuring secret and enabled flows match."
+  jq -n --arg secret "$KC_CLIENT_SECRET" '{
+      secret: $secret, serviceAccountsEnabled: true, directAccessGrantsEnabled: true
+    }' | curl -fsS -X PUT -H "$AUTH" -H 'Content-Type: application/json' "$BASE/$REALM/clients/$CLIENT_UUID" -d @-
 fi
 
 # --- Hardcoded audience mapper -> aud: api://AzureADTokenExchange -------------
@@ -82,9 +87,29 @@ else
 fi
 
 # The service-account user's UUID is the `sub` claim of client_credentials
-# tokens; it becomes the federated identity credential's subject.
+# tokens; it becomes one federated identity credential's subject.
 SUBJECT=$(curl -fsS -H "$AUTH" "$BASE/$REALM/clients/$CLIENT_UUID/service-account-user" | jq -r .id)
 echo "Service-account subject: $SUBJECT"
+
+# --- Test user (idempotent) --------------------------------------------------
+# A regular Keycloak user whose UUID is the `sub` of password-grant tokens;
+# it becomes the second federated identity credential's subject.
+USER_SUBJECT=$(curl -fsS -H "$AUTH" "$BASE/$REALM/users?username=$TEST_USERNAME&exact=true" | jq -r '.[0].id // empty')
+if [ -z "$USER_SUBJECT" ]; then
+  echo "Creating test user '$TEST_USERNAME' ..."
+  jq -n --arg u "$TEST_USERNAME" '{
+      username: $u, enabled: true, emailVerified: true,
+      email: ($u + "@example.invalid"), firstName: "Test", lastName: "User"
+    }' | curl -fsS -X POST -H "$AUTH" -H 'Content-Type: application/json' "$BASE/$REALM/users" -d @-
+  USER_SUBJECT=$(curl -fsS -H "$AUTH" "$BASE/$REALM/users?username=$TEST_USERNAME&exact=true" | jq -r '.[0].id')
+else
+  echo "Test user '$TEST_USERNAME' already exists."
+fi
+# Set (or reset) the password; this call is idempotent.
+jq -n --arg p "$TEST_USER_PASSWORD" '{type: "password", value: $p, temporary: false}' |
+  curl -fsS -X PUT -H "$AUTH" -H 'Content-Type: application/json' \
+    "$BASE/$REALM/users/$USER_SUBJECT/reset-password" -d @-
+echo "Test user subject: $USER_SUBJECT"
 
 # --- Demo blob for the data-plane verification ---------------------------------
 echo 'Hello from the Azure data plane, via your own OIDC provider!' > /tmp/hello.txt
@@ -114,4 +139,5 @@ if [ "$locked" != "1" ]; then
 fi
 echo "Admin lockdown enabled."
 
-jq -n --arg subject "$SUBJECT" '{subject: $subject}' > "$AZ_SCRIPTS_OUTPUT_PATH"
+jq -n --arg subject "$SUBJECT" --arg userSubject "$USER_SUBJECT" \
+  '{subject: $subject, userSubject: $userSubject}' > "$AZ_SCRIPTS_OUTPUT_PATH"

@@ -37,16 +37,25 @@ possible: one Bicep template plus PowerShell orchestration.
 
 ## Token flow
 
-1. Workload gets a `client_credentials` token from
-   `https://<fqdn>/realms/azure` (client `azure-federation`).
+1. A principal gets a Keycloak token from `https://<fqdn>/realms/azure`
+   (client `azure-federation`) — either the service account via
+   `client_credentials` (`sub` = service-account UUID) or the test user via the
+   `password` grant (`sub` = test user UUID). Both tokens carry
+   `aud=api://AzureADTokenExchange` from the client's audience mapper.
 2. Workload POSTs to `https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token`
    with `client_id=<UAMI client ID>`,
    `client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer`,
    `client_assertion=<Keycloak token>`, and the target scope
    (`https://management.azure.com/.default` or `https://storage.azure.com/.default`).
-3. Entra validates the assertion against the FIC and issues an access token for
-   the managed identity, whose RBAC grants (`Reader` on the resource group,
-   `Storage Blob Data Reader` on a demo account) bound what the workload can do.
+3. Entra validates the assertion against the matching FIC (one per subject) and
+   issues an access token for the managed identity, whose RBAC grants (`Reader`
+   on the resource group, `Storage Blob Data Reader` on a demo account) bound
+   what the workload can do.
+
+Two federated credentials are created on the one managed identity — one for the
+service-account subject, one for the test-user subject — both with the same
+issuer and audience. This shows that any Keycloak principal you provision can be
+federated by adding a credential for its `sub`, up to the 20-per-identity limit.
 
 ## Deliverables
 
@@ -54,12 +63,13 @@ possible: one Bicep template plus PowerShell orchestration.
   — self-sufficient subscription-scope deployment. An embedded
   `deploymentScripts` resource (`infra/scripts/bootstrap.sh`, run in Azure
   under a dedicated deployer identity with Contributor on the resource group)
-  waits for Keycloak, bootstraps realm/client/audience mapper, uploads the
-  demo blob, and re-enables the admin lockdown; the FIC is then created from
-  its `subject` output. This means deploying `main.bicep` alone — including
+  waits for Keycloak, bootstraps realm/client/audience mapper, provisions a
+  test user, uploads the demo blob, and re-enables the admin lockdown; the two
+  FICs (service account + test user) are then created from its `subject` /
+  `userSubject` outputs. This means deploying `main.bicep` alone — including
   from the Bicep extension GUI — produces a fully working federation. The
-  Keycloak client secret is a secure *input* parameter so it never appears in
-  deployment outputs.
+  Keycloak client secret and the test-user password are secure *input*
+  parameters so they never appear in deployment outputs.
 - `caddy/Caddyfile.aca` (sidecar lockdown/caching) and `caddy/Caddyfile.local`.
 - `docker-compose.yml` — local parity stack.
 - `scripts/deploy.ps1` — optional convenience wrapper: preflight/provider
@@ -79,5 +89,7 @@ possible: one Bicep template plus PowerShell orchestration.
   `https://localhost/realms/master/.well-known/openid-configuration`.
 - Static: `az bicep build` on all templates.
 - Live: `./scripts/deploy.ps1` then `./scripts/test-federation.ps1` must pass
-  all four checks; a token minted without the audience mapper (or a wrong
-  subject) must be rejected with an `AADSTS` error, confirming the trust scope.
+  every check — the service-account flow (token → exchange → ARM GET → blob
+  read) and the test-user flow (`password` token → exchange → ARM GET); a token
+  minted without the audience mapper (or a wrong subject) must be rejected with
+  an `AADSTS` error, confirming the trust scope.

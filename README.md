@@ -66,20 +66,33 @@ script — performs the entire flow (~15–20 minutes on first run):
    group and `Storage Blob Data Reader` on a demo storage account.
 2. **In-Azure bootstrap** (`infra/scripts/bootstrap.sh`, run by an embedded
    `deploymentScripts` resource under a dedicated deployer identity) — waits
-   for Keycloak, creates realm `azure`, confidential client
-   `azure-federation` (service account only, secret from your parameter), the
-   hardcoded audience mapper `aud: api://AzureADTokenExchange`, uploads the
-   demo blob, and re-enables the Caddy admin lockdown (`/admin*`,
+   for Keycloak, creates realm `azure`, confidential client `azure-federation`
+   (service-account **and** direct-access-grant flows, secret from your
+   parameter), the hardcoded audience mapper `aud: api://AzureADTokenExchange`,
+   a **test user** (`testuser` by default) with the password you supply,
+   uploads the demo blob, and re-enables the Caddy admin lockdown (`/admin*`,
    `/realms/master*`, `/metrics` → 403 from the internet).
-3. **Federation** — the template creates the federated identity credential on
-   the managed identity from the bootstrap output: issuer
-   `https://<fqdn>/realms/azure`, subject `<service-account UUID>`, audience
-   `api://AzureADTokenExchange`.
+3. **Federation** — the template creates **two** federated identity credentials
+   on the managed identity, both with issuer `https://<fqdn>/realms/azure` and
+   audience `api://AzureADTokenExchange`:
+   - `keycloak-federation` — subject = the **service-account** UUID (used by
+     `client_credentials` tokens).
+   - `keycloak-federation-testuser` — subject = the **test user's** UUID (used
+     by `password`-grant tokens). Both principals federate to the *same*
+     managed identity.
 
-You supply three secure parameters of your choosing (16+ chars): the Keycloak
-admin password, the PostgreSQL admin password, and the Keycloak client secret.
-The client secret is a parameter (not Keycloak-generated) precisely so it
-never has to appear in deployment outputs.
+You supply four secure parameters of your choosing: the Keycloak admin password,
+the PostgreSQL admin password, the Keycloak client secret (16+ chars each), and
+the test user's password (12+ chars). The client secret is a parameter (not
+Keycloak-generated) precisely so it never has to appear in deployment outputs.
+
+> **Why the test user needs the direct-access-grant flow:** a federated
+> credential is only useful if the subject can actually obtain a token that
+> carries the `api://AzureADTokenExchange` audience. The service account gets
+> one via `client_credentials`; the test user gets one via the `password`
+> (ROPC) grant on the same client, so the client's audience mapper applies to
+> both. ROPC suits an automated test user; for real interactive users you would
+> use the authorization-code flow instead.
 
 ### Option A: Bicep extension GUI (VS Code / Codespaces)
 
@@ -96,17 +109,22 @@ never has to appear in deployment outputs.
    the deployment pane), pick the subscription (the template is
    subscription-scoped — it creates its own resource group), and select
    `infra/main.bicepparam` as the parameters file.
-3. The GUI prompts for the three secrets, everything else has defaults. Then
-   deploy — when it finishes, the federation is live.
-4. To verify, feed the deployment outputs to the test script (the client
-   secret is the value you typed in step 3):
+3. The GUI prompts for the four secure parameters (Keycloak admin password,
+   PostgreSQL admin password, Keycloak client secret, test user password);
+   everything else has defaults. Then deploy — when it finishes, both
+   federated credentials are live.
+4. To verify, feed the deployment outputs and the secrets you typed in step 3
+   to the test script:
 
    ```powershell
    ./scripts/test-federation.ps1 -KeycloakUrl https://<keycloakFqdn> -Realm azure `
-     -ClientId azure-federation -ClientSecret <yours> -TenantId <tenantId> `
+     -ClientId azure-federation -ClientSecret <yourClientSecret> -TenantId <tenantId> `
      -UamiClientId <identityClientId> -SubscriptionId <sub> `
-     -ResourceGroup <resourceGroupName> -StorageAccount <storageAccountName>
+     -ResourceGroup <resourceGroupName> -StorageAccount <storageAccountName> `
+     -TestUsername testuser -TestUserPassword <yourTestUserPassword>
    ```
+   The service-account checks run always; passing `-TestUsername`/
+   `-TestUserPassword` additionally exercises the test-user credential.
 
 ### Option B: wrapper script
 
@@ -182,12 +200,17 @@ development only.
 ## Security notes
 
 - **The Keycloak client secret *is* the key to the managed identity.** Anyone
-  who can obtain a `client_credentials` token from that client can act as the
-  UAMI within its RBAC grants. Guard the secret and the Keycloak admin
-  password like any Azure credential; rotate/revoke them in Keycloak at will
-  (that's the point of owning the IdP).
-- The FIC matches `issuer`/`subject`/`audience` exactly — no wildcards exist,
-  and a mismatch fails silently at token-exchange time, not at FIC creation.
+  who can obtain a token from that client — a `client_credentials` token, or a
+  `password` token with the test user's credentials — can act as the UAMI
+  within its RBAC grants. Guard the client secret, the admin password, and the
+  test user's password like any Azure credential; rotate/revoke them in
+  Keycloak at will (that's the point of owning the IdP).
+- The **test user** exists to demonstrate a human-style (non-service-account)
+  federation and uses the ROPC/`password` grant, which is convenient for an
+  automated test but weaker than interactive auth — disable it or delete the
+  user if you don't need it. Each FIC matches `issuer`/`subject`/`audience`
+  exactly — no wildcards exist, and a mismatch fails silently at
+  token-exchange time, not at FIC creation.
 - Only RS256-signed tokens are supported for the exchange (Keycloak default).
 - Access-token lifetime in the realm is 300 s, keeping assertions short-lived.
 - Keycloak signing-key rotation is transparent: Entra re-fetches your JWKS.
@@ -203,7 +226,8 @@ development only.
 | Path | Purpose |
 | --- | --- |
 | `infra/main.bicep` (+ `infra/modules/*.bicep`) | Subscription-scope deployment of everything, including the in-Azure bootstrap and the FIC. |
-| `infra/scripts/bootstrap.sh` | Runs inside the `deploymentScripts` container: Keycloak realm/client/mapper setup (idempotent), demo blob, lockdown. |
+| `infra/scripts/bootstrap.sh` | Runs inside the `deploymentScripts` container: Keycloak realm/client/mapper + test-user setup (idempotent), demo blob, lockdown. |
+| `infra/modules/federation.bicep` | Creates both federated credentials (service account + test user) on the managed identity. |
 | `caddy/Caddyfile.aca` | Sidecar proxy: admin lockdown + JWKS cache headers. |
 | `caddy/Caddyfile.local` | Local TLS proxy for the compose stack. |
 | `docker-compose.yml` | Local Caddy + Keycloak + Postgres stack. |

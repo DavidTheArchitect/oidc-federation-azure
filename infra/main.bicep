@@ -5,7 +5,7 @@
 // Keycloak bootstrap in Azure and the federated identity credential is created
 // from its output, so deploying main.bicep alone - via the Bicep extension
 // GUI, `az deployment sub create`, or scripts/deploy.ps1 - produces a fully
-// working federation. You only supply three secrets of your choosing.
+// working federation. You only supply four secrets of your choosing.
 targetScope = 'subscription'
 
 param location string = 'eastus2'
@@ -26,6 +26,12 @@ param postgresAdminPassword string
 param keycloakClientSecret string
 param keycloakRealm string = 'azure'
 param keycloakClientId string = 'azure-federation'
+// A test user provisioned in the realm; its token (password grant) federates
+// to the same managed identity via a second federated identity credential.
+param keycloakTestUsername string = 'testuser'
+@secure()
+@minLength(12)
+param keycloakTestUserPassword string
 param keycloakImage string = 'quay.io/keycloak/keycloak:26.3'
 // The app always deploys unlocked so the in-deployment bootstrap script can
 // reach the admin REST API; the same script re-enables the lockdown as its
@@ -103,6 +109,8 @@ module bootstrap 'modules/bootstrap.bicep' = {
     clientId: keycloakClientId
     keycloakAdminPassword: keycloakAdminPassword
     keycloakClientSecret: keycloakClientSecret
+    testUsername: keycloakTestUsername
+    testUserPassword: keycloakTestUserPassword
     storageAccountName: storageDemo.outputs.storageAccountName
     containerAppName: 'keycloak-${baseName}'
   }
@@ -115,6 +123,7 @@ module federation 'modules/federation.bicep' = {
     identityName: identity.outputs.identityName
     issuer: 'https://${keycloakApp.outputs.fqdn}/realms/${keycloakRealm}'
     subject: bootstrap.outputs.subject
+    userSubject: bootstrap.outputs.userSubject
   }
 }
 
@@ -124,7 +133,9 @@ output containerAppName string = 'keycloak-${baseName}'
 output issuer string = 'https://${keycloakApp.outputs.fqdn}/realms/${keycloakRealm}'
 output keycloakRealm string = keycloakRealm
 output keycloakClientId string = keycloakClientId
+output keycloakTestUsername string = keycloakTestUsername
 output federationSubject string = bootstrap.outputs.subject
+output federationUserSubject string = bootstrap.outputs.userSubject
 output identityName string = identity.outputs.identityName
 output identityClientId string = identity.outputs.clientId
 output identityPrincipalId string = identity.outputs.principalId

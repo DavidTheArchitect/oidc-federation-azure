@@ -90,6 +90,8 @@ $existingEnv = Read-EnvFile $envFile
 $kcAdminPassword = if ($existingEnv['KC_ADMIN_PASSWORD']) { $existingEnv['KC_ADMIN_PASSWORD'] } else { New-RandomPassword }
 $pgPassword      = if ($existingEnv['POSTGRES_PASSWORD']) { $existingEnv['POSTGRES_PASSWORD'] } else { New-RandomPassword }
 $clientSecret    = if ($existingEnv['KEYCLOAK_CLIENT_SECRET']) { $existingEnv['KEYCLOAK_CLIENT_SECRET'] } else { New-RandomPassword }
+$testUserPassword = if ($existingEnv['KEYCLOAK_TEST_USER_PASSWORD']) { $existingEnv['KEYCLOAK_TEST_USER_PASSWORD'] } else { New-RandomPassword }
+$testUsername    = if ($existingEnv['KEYCLOAK_TEST_USERNAME']) { $existingEnv['KEYCLOAK_TEST_USERNAME'] } else { 'testuser' }
 
 # --- 2. Bicep deployment (includes the in-Azure Keycloak bootstrap) -----------
 Write-Host "`n== Bicep deployment (first run takes ~15-20 minutes, including the in-Azure bootstrap) =="
@@ -101,15 +103,18 @@ $deployment = az deployment sub create `
     --template-file $templateFile `
     --parameters location=$Location baseName=$BaseName `
                  keycloakRealm=$Realm keycloakClientId=$KeycloakClientId `
+                 keycloakTestUsername=$testUsername `
                  keycloakAdminPassword=$kcAdminPassword `
                  postgresAdminPassword=$pgPassword `
                  keycloakClientSecret=$clientSecret `
+                 keycloakTestUserPassword=$testUserPassword `
     --output json | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or -not $deployment) { throw 'Bicep deployment failed.' }
 
 $outputs = $deployment.properties.outputs
 Write-Host "Keycloak issuer: $($outputs.issuer.value)"
-Write-Host "Federation subject: $($outputs.federationSubject.value)"
+Write-Host "Federation subject (service account): $($outputs.federationSubject.value)"
+Write-Host "Federation subject (test user): $($outputs.federationUserSubject.value)"
 
 # --- 3. Persist resolved configuration -----------------------------------------
 @"
@@ -122,6 +127,8 @@ KEYCLOAK_URL=https://$($outputs.keycloakFqdn.value)
 KEYCLOAK_REALM=$Realm
 KEYCLOAK_CLIENT_ID=$KeycloakClientId
 KEYCLOAK_CLIENT_SECRET=$clientSecret
+KEYCLOAK_TEST_USERNAME=$testUsername
+KEYCLOAK_TEST_USER_PASSWORD=$testUserPassword
 KC_ADMIN_PASSWORD=$kcAdminPassword
 POSTGRES_PASSWORD=$pgPassword
 DEMO_STORAGE_ACCOUNT=$($outputs.storageAccountName.value)
